@@ -14,7 +14,9 @@
   let videoElement: HTMLVideoElement | undefined = $state();
   let waitingTimeout: ReturnType<typeof setTimeout> | undefined;
   let retryResetTimeout: ReturnType<typeof setTimeout> | undefined;
+  let networkRecoveryTimeout: ReturnType<typeof setTimeout> | undefined;
   let stallCheckInterval: ReturnType<typeof setInterval> | undefined;
+  let isDestroyed = false;
 
   let retryCount = 0;
   let lastTimeUpdate = 0;
@@ -37,6 +39,7 @@
 
   // Single recovery path shared by all stall detectors.
   function tryRecover(source: string) {
+    if (isDestroyed) return;
     if (retryCount < MAX_RETRIES) {
       console.debug(`Video recovery [${source}], attempt ${retryCount + 1}/${MAX_RETRIES}`);
       retryCount++;
@@ -52,6 +55,7 @@
     if (retryResetTimeout) return;
     retryResetTimeout = setTimeout(() => {
       retryResetTimeout = undefined;
+      if (isDestroyed) return;
       retryCount = 0;
       if (!paused) doReload();
     }, RETRY_RESET_MS);
@@ -101,6 +105,10 @@
       clearTimeout(retryResetTimeout);
       retryResetTimeout = undefined;
     }
+    if (networkRecoveryTimeout) {
+      clearTimeout(networkRecoveryTimeout);
+      networkRecoveryTimeout = undefined;
+    }
     retryCount = 0;
     isReloading = false;
   }
@@ -138,7 +146,11 @@
     if (error) {
       console.error("Video error:", { code: error.code, message: error.message, src: videoSrc });
       if (error.code === MediaError.MEDIA_ERR_NETWORK) {
-        setTimeout(() => tryRecover("network-error"), 1000);
+        if (networkRecoveryTimeout) clearTimeout(networkRecoveryTimeout);
+        networkRecoveryTimeout = setTimeout(() => {
+          networkRecoveryTimeout = undefined;
+          tryRecover("network-error");
+        }, 1000);
       } else {
         scheduleRetryReset();
       }
@@ -169,11 +181,13 @@
   });
 
   onDestroy(() => {
+    isDestroyed = true;
     // Cleanup on unmount to prevent memory leaks
     // https://github.com/facebook/react/issues/15583
     // this is a workaround for a bug in js that causes memory leak on video elements
     if (waitingTimeout) clearTimeout(waitingTimeout);
     if (retryResetTimeout) clearTimeout(retryResetTimeout);
+    if (networkRecoveryTimeout) clearTimeout(networkRecoveryTimeout);
     if (stallCheckInterval) clearInterval(stallCheckInterval);
     if (videoElement) {
       videoElement.pause();
